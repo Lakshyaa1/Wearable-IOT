@@ -33,7 +33,7 @@ async def handler(websocket):
 
     try:
         async for message in websocket:
-            print(f"[<] Received: {message}")
+            # print(f"[<] Received: {message}") # Optional: Uncomment to see raw incoming strings
 
             try:
                 data = json.loads(message)
@@ -41,10 +41,11 @@ async def handler(websocket):
                 print("    [!] Invalid JSON, skipping")
                 continue
 
+            # --- IMU FRAGMENTATION HANDLING ---
             if data.get("dev") == "IMU" and "raw" in data:
                 imu_buffer += data["raw"]
-
                 required = ["AX:", "AY:", "AZ:", "GX:", "GY:", "GZ:"]
+                
                 if all(k in imu_buffer for k in required):
                     parsed = parse_imu_buffer(imu_buffer)
                     imu_buffer = ""  # reset regardless of success
@@ -52,34 +53,28 @@ async def handler(websocket):
                     if len(parsed) == 6:
                         complete_msg = json.dumps({
                             "dev": "IMU",
-                            "ax": parsed["AX"],
-                            "ay": parsed["AY"],
-                            "az": parsed["AZ"],
-                            "gx": parsed["GX"],
-                            "gy": parsed["GY"],
-                            "gz": parsed["GZ"]
+                            "ax": parsed["AX"], "ay": parsed["AY"], "az": parsed["AZ"],
+                            "gx": parsed["GX"], "gy": parsed["GY"], "gz": parsed["GZ"]
                         })
-                        print(f"    [✓] IMU assembled: {complete_msg}")
-
                         for client in connected_clients.copy():
                             if client != websocket:
                                 try:
                                     await client.send(complete_msg)
-                                    print(f"    [>] Forwarded assembled IMU")
                                 except:
                                     pass
                     else:
                         print(f"    [!] IMU parse incomplete, got {len(parsed)}/6 fields, discarding")
-                else:
-                    print(f"    [~] IMU fragment buffered, waiting for more...")
                 continue
 
-            # All other sensors forward as-is
+            # --- ALL OTHER SENSORS (ECG, Load, SPO2, EEG) ---
+            # Print specifically for EEG to help you debug your filter outputs
+            if data.get("dev") == "EEG":
+                print(f"    [>] Forwarding EEG data: {data.get('eeg')} µV")
+
             for client in connected_clients.copy():
                 if client != websocket:
                     try:
                         await client.send(message)
-                        print(f"    [>] Forwarded to another client")
                     except:
                         pass
 
@@ -101,13 +96,7 @@ async def main():
     print("=" * 60)
     print("Waiting for connections...\n")
 
-    async with websockets.serve(
-        handler,
-        HOST,
-        PORT,
-        ping_interval=20,
-        ping_timeout=10
-    ):
+    async with websockets.serve(handler, HOST, PORT, ping_interval=20, ping_timeout=10):
         await asyncio.Future()
 
 if __name__ == "__main__":
