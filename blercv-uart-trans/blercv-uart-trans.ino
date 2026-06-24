@@ -1,104 +1,98 @@
 #include "BLEDevice.h"
 
+#define ONBOARD_LED 2
+
+#pragma pack(push,1)
+struct EEGPacket {
+    uint16_t samples[10];
+};
+#pragma pack(pop)
+
 // ===============================
 // UUID DEFINITIONS
 // ===============================
 static BLEUUID serviceUUID("4fafc201-1fb5-459e-8fcc-c5c9c331914b");
-static BLEUUID charUUID_imu((uint16_t)0x27A8);
-static BLEUUID charUUID_ecg((uint16_t)0x2A37);
-static BLEUUID charUUID_load((uint16_t)0x2A98);
-static BLEUUID charUUID_spo2((uint16_t)0x2A8D);
-static BLEUUID charUUID_eeg((uint16_t)0x2A99);  // ADD THIS
+static BLEUUID charUUID_eeg((uint16_t)0x2A99);  
 
 static BLEAdvertisedDevice* myDevice;
-static BLERemoteCharacteristic* imuChar;
-static BLERemoteCharacteristic* ecgChar;
-static BLERemoteCharacteristic* loadChar;
-static BLERemoteCharacteristic* spo2Char;
-static BLERemoteCharacteristic* eegChar;  // ADD THIS
+static BLERemoteCharacteristic* eegChar;  
 
 bool doConnect = false;
 bool connected = false;
 bool doScan = true;
 
 // ===============================
+// GLOBAL COUNTERS & BUFFERS
+// ===============================
+uint32_t eegPackets = 0;
+uint32_t eegSamples = 0;
+uint32_t lastStats = 0;
+
+// ===============================
 // PARSER FUNCTION
 // ===============================
-void parseMessage(uint16_t type_, uint8_t* pData, size_t length) {
-  char message[300];
-  int idx = 0;
-  message[0] = '\0'; // Clear buffer
-
-  // Convert payload bytes to string
-  String dataStr = "";
-  for (size_t i = 0; i < length; i++) dataStr += (char)pData[i];
-
-  // JSON start
-  idx += sprintf(message + idx, "{");
-
-  if (type_ == 1) { 
-    // IMU data: "AX:%.2f AY:%.2f AZ:%.2f GX:%.1f GY:%.1f GZ:%.1f"
-    float ax, ay, az, gx, gy, gz;
-    int count = sscanf(dataStr.c_str(), "AX:%f AY:%f AZ:%f GX:%f GY:%f GZ:%f", &ax, &ay, &az, &gx, &gy, &gz);
-    if (count == 6) {
-      idx += sprintf(message + idx,
-                     "\"dev\":\"IMU\",\"ax\":%.2f,\"ay\":%.2f,\"az\":%.2f,"
-                     "\"gx\":%.1f,\"gy\":%.1f,\"gz\":%.1f",
-                     ax, ay, az, gx, gy, gz);
-     } 
-    else {
-      idx += sprintf(message + idx, "\"dev\":\"IMU\",\"raw\":\"%s\"", dataStr.c_str());
+void parseMessage(uint8_t* pData, size_t length)
+{
+    if(length != sizeof(EEGPacket))
+    {
+        Serial.print("Bad EEG packet length: ");
+        Serial.println(length);
+        return;
     }
-  } 
-  else if (type_ == 2) { 
-    // ECG data
-    int ecgVal = atoi(dataStr.c_str());
-    idx += sprintf(message + idx, "\"dev\":\"ECG\",\"ecg\":%d", ecgVal);
-  } 
-  else if (type_ == 3) { 
-    // Loadcell data
-    float load = atof(dataStr.c_str());
-    idx += sprintf(message + idx, "\"dev\":\"Load\",\"load\":%.2f", load);
-  }
-  else if (type_ == 4) {
-    // SPO2 data: "Red,IR"
-    long red, ir;
-    int count = sscanf(dataStr.c_str(), "%ld,%ld", &red, &ir);
-    if (count == 2) {
-      idx += sprintf(message + idx, "\"dev\":\"SPO2\",\"red\":%ld,\"ir\":%ld", red, ir);
-    } else {
-      idx += sprintf(message + idx, "\"dev\":\"SPO2\",\"raw\":\"%s\"", dataStr.c_str());
-    }
-  }
-  else if (type_ == 5) {
-    // EEG data
-    float eegVal = atof(dataStr.c_str());
-    idx += sprintf(message + idx, "\"dev\":\"EEG\",\"eeg\":%.2f", eegVal);
-  }
-  
-  // JSON end
-  idx += sprintf(message + idx, "}\n");
 
-  // Print to both Serial (USB) and Serial1 (UART)
-  Serial.print(message);
-  Serial1.print(message);
+    EEGPacket packet;
+
+    memcpy(
+        &packet,
+        pData,
+        sizeof(packet)
+    );
+
+    eegPackets++;
+    eegSamples += 10;
+
+    char message[256];
+    int idx = 0;
+
+    idx += sprintf(
+        message + idx,
+        "{\"dev\":\"EEG\",\"samples\":["
+    );
+
+    for(int i = 0; i < 10; i++)
+    {
+        idx += sprintf(
+            message + idx,
+            "%u",
+            packet.samples[i]
+        );
+
+        if(i < 9)
+        {
+            idx += sprintf(message + idx, ",");
+        }
+    }
+
+    idx += sprintf(message + idx, "]}");
+
+    //Serial.println(message);
+    Serial1.println(message);
+    Serial1.flush();
 }
 
 // ===============================
 // NOTIFICATION CALLBACK
 // ===============================
-void notifyCallback(BLERemoteCharacteristic* characteristic, uint8_t* data, size_t length, bool isNotify) {
-  BLEUUID uuid = characteristic->getUUID();
-  uint8_t type_ = 0;
-
-  if (uuid.equals(charUUID_imu)) type_ = 1;
-  else if (uuid.equals(charUUID_ecg)) type_ = 2;
-  else if (uuid.equals(charUUID_load)) type_ = 3;
-  else if (uuid.equals(charUUID_spo2)) type_ = 4;
-  else if (uuid.equals(charUUID_eeg)) type_ = 5;  // ADD THIS
-
-  if (type_ > 0) parseMessage(type_, data, length);
-  else Serial.println("Unknown characteristic notification received!");
+void notifyCallback(
+    BLERemoteCharacteristic* characteristic,
+    uint8_t* data,
+    size_t length,
+    bool isNotify)
+{
+    if(characteristic->getUUID().equals(charUUID_eeg))
+    {
+        parseMessage(data, length);
+    }
 }
 
 // ===============================
@@ -108,11 +102,14 @@ class MyClientCallback : public BLEClientCallbacks {
   void onConnect(BLEClient* pClient) {
     Serial.println("[BLE] Connected to server");
     Serial1.println("[BLE] Connected to server");
+    digitalWrite(ONBOARD_LED, HIGH); // Turn LED ON upon BLE connection
   }
   void onDisconnect(BLEClient* pClient) {
     connected = false;
+    doScan = true; // <--- ADDED: Tells the main loop to start scanning again
     Serial.println("[BLE] Disconnected from server");
     Serial1.println("[BLE] Disconnected from server");
+    digitalWrite(ONBOARD_LED, LOW); // Turn LED OFF upon disconnect
   }
 };
 
@@ -138,31 +135,11 @@ bool connectToServer() {
   }
   Serial.println("[BLE] Service found!");
 
-  // Get all characteristics
-  imuChar = service->getCharacteristic(charUUID_imu);
-  ecgChar = service->getCharacteristic(charUUID_ecg);
-  loadChar = service->getCharacteristic(charUUID_load);
-  spo2Char = service->getCharacteristic(charUUID_spo2);
-  eegChar = service->getCharacteristic(charUUID_eeg);  // ADD THIS
+  // Get only the EEG characteristic
+  eegChar = service->getCharacteristic(charUUID_eeg);
 
   // Register for notifications
-  if (imuChar && imuChar->canNotify()) {
-    imuChar->registerForNotify(notifyCallback);
-    Serial.println("[BLE] IMU notifications enabled");
-  }
-  if (ecgChar && ecgChar->canNotify()) {
-    ecgChar->registerForNotify(notifyCallback);
-    Serial.println("[BLE] ECG notifications enabled");
-  }
-  if (loadChar && loadChar->canNotify()) {
-    loadChar->registerForNotify(notifyCallback);
-    Serial.println("[BLE] Load notifications enabled");
-  }
-  if (spo2Char && spo2Char->canNotify()) {
-    spo2Char->registerForNotify(notifyCallback);
-    Serial.println("[BLE] SPO2 notifications enabled");
-  }
-  if (eegChar && eegChar->canNotify()) {  // ADD THIS
+  if (eegChar && eegChar->canNotify()) {
     eegChar->registerForNotify(notifyCallback);
     Serial.println("[BLE] EEG notifications enabled");
   }
@@ -176,14 +153,14 @@ bool connectToServer() {
 // ===============================
 class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) {
-    if (advertisedDevice.getName() == "Wearables") {
+    if (advertisedDevice.getName() == "EEG_100HZ") {
       Serial.print("[BLE] Found target device: ");
       Serial.println(advertisedDevice.toString().c_str());
-      Serial1.println("[BLE] Found target device: Wearables");
+      Serial1.println("[BLE] Found target device: EEG_100HZ");
       BLEDevice::getScan()->stop();
       myDevice = new BLEAdvertisedDevice(advertisedDevice);
       doConnect = true;
-      doScan = false;
+      doScan = false; // Stop scanning once we find it
     }
   }
 };
@@ -197,14 +174,17 @@ void setup() {
   
   Serial1.begin(115200, SERIAL_8N1, 16, 17); // RX=16, TX=17
   delay(100);
+
+  pinMode(ONBOARD_LED, OUTPUT);
+  digitalWrite(ONBOARD_LED, LOW);
   
   Serial.println("\n\n========================================");
-  Serial.println("BLE Wearables Sensor Client");
+  Serial.println("BLE EEG Sensor Client");
   Serial.println("========================================");
   Serial.println("Initializing BLE...");
   
   Serial1.println("========================================");
-  Serial1.println("BLE Wearables Sensor Client - UART Output");
+  Serial1.println("BLE EEG Sensor Client - UART Output");
   Serial1.println("========================================");
 
   BLEDevice::init("Wearables_Client");
@@ -227,14 +207,45 @@ void loop() {
     } else {
       Serial.println("[MAIN] Failed to connect to server");
       Serial1.println("[MAIN] Failed to connect to server");
+      doScan = true; // <--- ADDED: If connection fails, force a re-scan
     }
     doConnect = false;
   }
 
+  // <--- UPDATED: Scans in 5-second bursts to allow the loop to keep breathing
   if (!connected && doScan) {
-    Serial.println("[MAIN] Connection lost, restarting scan...");
-    Serial1.println("[MAIN] Connection lost, restarting scan...");
-    BLEDevice::getScan()->start(0);
+    Serial.println("[MAIN] Connection lost/failed, starting 5-second scan...");
+    Serial1.println("[MAIN] Connection lost/failed, starting scan...");
+    BLEDevice::getScan()->start(5, false); 
+  }
+
+  // ===============================
+  // 5-SECOND STATUS PRINT
+  // ===============================
+  if (millis() - lastStats >= 5000) {
+      Serial.println();
+      Serial.println("===== BLE CLIENT STATUS =====");
+
+      Serial.print("Connected: ");
+      Serial.println(connected ? "YES" : "NO");
+
+      Serial.print("EEG packets: ");
+      Serial.println(eegPackets);
+
+      Serial.print("EEG samples: ");
+      Serial.println(eegSamples);
+
+      Serial.print("EEG rate: ");
+      Serial.print(eegSamples / 5);
+      Serial.println(" samples/sec");
+
+      Serial.println("=============================");
+
+      // Reset counters
+      eegPackets = 0;
+      eegSamples = 0;
+
+      lastStats = millis();
   }
 
   delay(10);

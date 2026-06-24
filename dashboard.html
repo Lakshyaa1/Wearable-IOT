@@ -113,7 +113,7 @@
 <body>
 
     <script>
-       const WS_URL = 'ws://192.168.1.16:1234';
+        const WS_URL = 'ws://192.168.29.135:1234';
         let ws = null;
         let messageCount = 0;
         let connectTime = null;
@@ -123,8 +123,16 @@
 
         const MAX_CHART_POINTS = 50;
 
-        // Chart contexts - ADDED eegChart
-        let ecgChart, redirChart, loadChart, accelChart, gyroChart, eegChart;
+        // Chart contexts
+        let ecgChart,
+            redirChart,
+            loadChart,
+            accelChart,
+            gyroChart,
+            eegChart,
+            fftChart,
+            bandChart,
+            focusChart;
 
         function initCharts() {
             const chartConfig = (color) => ({
@@ -189,13 +197,124 @@
                 }
             });
 
-            ecgChart = new Chart(document.getElementById('ecgChart'), chartConfig('#ef4444')); // Red
-            redirChart = new Chart(document.getElementById('redirChart'), chartConfig('#f59e0b')); // Amber
-            loadChart = new Chart(document.getElementById('loadChart'), chartConfig('#10b981')); // Green
-            eegChart = new Chart(document.getElementById('eegChart'), chartConfig('#8b5cf6')); // Purple for Brainwaves
+            ecgChart = new Chart(document.getElementById('ecgChart'), chartConfig('#ef4444')); 
+            redirChart = new Chart(document.getElementById('redirChart'), chartConfig('#f59e0b')); 
+            loadChart = new Chart(document.getElementById('loadChart'), chartConfig('#10b981')); 
+            eegChart = new Chart(document.getElementById('eegChart'), chartConfig('#8b5cf6')); 
             
             accelChart = new Chart(document.getElementById('accelChart'), multiLineConfig(['#ef4444', '#10b981', '#3b82f6']));
             gyroChart = new Chart(document.getElementById('gyroChart'), multiLineConfig(['#f59e0b', '#8b5cf6', '#ec4899']));
+
+            // FFT Chart
+            fftChart = new Chart(document.getElementById('fftChart'), {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'FFT Power',
+                        data: [],
+                        borderColor: '#f59e0b',
+                        backgroundColor: '#f59e0b20',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { 
+                            display: true,
+                            grid: { color: 'rgba(255,255,255,0.1)' },
+                            ticks: { 
+                                color: '#94a3b8', 
+                                font: { size: 10 },
+                                callback: function(value, index, values) {
+                                    let freq = this.getLabelForValue(value);
+                                    return parseFloat(freq).toFixed(1) + ' Hz';
+                                }
+                            }
+                        },
+                        y: { 
+                            display: true,
+                            grid: { color: 'rgba(255,255,255,0.1)' },
+                            ticks: { color: '#94a3b8', font: { size: 10 } }
+                        }
+                    }
+                }
+            });
+
+            // Restored: Band Power Distribution Chart
+            bandChart = new Chart(document.getElementById('bandChart'), {
+                type: 'bar',
+                data: {
+                    labels: ['Delta', 'Theta', 'Alpha', 'Beta', 'Gamma'],
+                    datasets: [{
+                        data: [0,0,0,0,0],
+                        backgroundColor: [
+                            '#ef4444', // Red
+                            '#f59e0b', // Amber
+                            '#10b981', // Green
+                            '#3b82f6', // Blue
+                            '#8b5cf6'  // Purple
+                        ],
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { 
+                            display: true,
+                            grid: { display: false },
+                            ticks: { color: '#94a3b8', font: { size: 11, weight: 'bold' } }
+                        },
+                        y: { 
+                            display: true,
+                            grid: { color: 'rgba(255,255,255,0.1)' },
+                            ticks: { color: '#94a3b8', font: { size: 10 } }
+                        }
+                    }
+                }
+            });
+
+            // Focus Chart
+            focusChart = new Chart(document.getElementById('focusChart'), {
+                type: 'line',
+                data: {
+                    labels: Array(MAX_CHART_POINTS).fill(''), 
+                    datasets: [{
+                        label: 'Beta/Alpha',
+                        data: Array(MAX_CHART_POINTS).fill(null),
+                        borderColor: '#10b981',
+                        backgroundColor: '#10b98120',
+                        pointRadius: 0,
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: { duration: 0 },
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { display: false },
+                        y: { 
+                            display: true,
+                            grid: { color: 'rgba(255,255,255,0.1)' },
+                            ticks: { color: '#94a3b8', font: { size: 10 } }
+                        }
+                    }
+                }
+            });
         }
 
         function updateChart(chart, value) {
@@ -217,6 +336,14 @@
                 chart.data.datasets[2].data.shift();
             }
             chart.update('none');
+        }
+
+        function updateFFT(freqs, power) {
+            if (fftChart) {
+                fftChart.data.labels = freqs;
+                fftChart.data.datasets[0].data = power;
+                fftChart.update('none');
+            }
         }
 
         function connect() {
@@ -272,12 +399,45 @@
                     updateChart(ecgChart, data.ecg);
                     break;
 
-                case 'EEG': // ADDED EEG CASE
-                    document.getElementById('eegValue').textContent = parseFloat(data.eeg).toFixed(2);
-                    updateChart(eegChart, parseFloat(data.eeg));
+                case 'EEG':
+                    if (data.samples && data.samples.length > 0) {
+                        let latest = data.samples[data.samples.length - 1];
+                        document.getElementById('eegValue').textContent = latest;
+
+                        for (let sample of data.samples) {
+                            updateChart(eegChart, sample);
+                        }
+                    }
                     break;
 
-                case 'RedIR': // Or SPO2 depending on your backend naming
+                case 'FFT':
+                    updateFFT(data.freq, data.power);
+                    break;
+
+                case 'EEG_BANDS':
+                    // Update Band Bar Chart
+                    if (bandChart) {
+                        bandChart.data.datasets[0].data = [
+                            data.delta,
+                            data.theta,
+                            data.alpha,
+                            data.beta,
+                            data.gamma
+                        ];
+                        bandChart.update('none');
+                    }
+                    
+                    // Update Alpha/Focus Values & Focus Chart
+                    if (data.alpha_ratio !== undefined) {
+                        document.getElementById('alphaValue').textContent = data.alpha_ratio.toFixed(3);
+                    }
+                    if (data.beta_alpha_ratio !== undefined) {
+                        document.getElementById('focusValue').textContent = data.beta_alpha_ratio.toFixed(3);
+                        updateChart(focusChart, data.beta_alpha_ratio);
+                    }
+                    break;
+
+                case 'RedIR': 
                 case 'SPO2':
                     if (data.red !== undefined && data.ir !== undefined) {
                         document.getElementById('redValue').textContent = data.red;
@@ -292,14 +452,19 @@
                     break;
 
                 case 'IMU':
-                    document.getElementById('axValue').textContent = data.ax ?? '--';
-                    document.getElementById('ayValue').textContent = data.ay ?? '--';
-                    document.getElementById('azValue').textContent = data.az ?? '--';
-                    document.getElementById('gxValue').textContent = data.gx ?? '--';
-                    document.getElementById('gyValue').textContent = data.gy ?? '--';
-                    document.getElementById('gzValue').textContent = data.gz ?? '--';
-                    if (data.ax !== undefined) updateMultiChart(accelChart, data.ax, data.ay, data.az);
-                    if (data.gx !== undefined) updateMultiChart(gyroChart, data.gx, data.gy, data.gz);
+                    if (data.ax !== undefined) document.getElementById('axValue').textContent = data.ax;
+                    if (data.ay !== undefined) document.getElementById('ayValue').textContent = data.ay;
+                    if (data.az !== undefined) document.getElementById('azValue').textContent = data.az;
+                    if (data.gx !== undefined) document.getElementById('gxValue').textContent = data.gx;
+                    if (data.gy !== undefined) document.getElementById('gyValue').textContent = data.gy;
+                    if (data.gz !== undefined) document.getElementById('gzValue').textContent = data.gz;
+                    
+                    if (data.ax !== undefined && data.ay !== undefined && data.az !== undefined) {
+                        updateMultiChart(accelChart, data.ax, data.ay, data.az);
+                    }
+                    if (data.gx !== undefined && data.gy !== undefined && data.gz !== undefined) {
+                        updateMultiChart(gyroChart, data.gx, data.gy, data.gz);
+                    }
                     break;
             }
         }
@@ -426,6 +591,41 @@
                 <div class="sensor-value" id="eegValue">--</div>
                 <div class="sensor-label">Microvolts (µV)</div>
                 <canvas id="eegChart"></canvas>
+            </div>
+
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-icon">📈</span>
+                    <span class="sensor-title">EEG Spectrum</span>
+                </div>
+                <canvas id="fftChart"></canvas>
+            </div>
+
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-icon">📊</span>
+                    <span class="sensor-title">EEG Band Power</span>
+                </div>
+                <canvas id="bandChart"></canvas>
+            </div>
+
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-icon">🧘</span>
+                    <span class="sensor-title">Alpha Ratio</span>
+                </div>
+                <div class="sensor-value" id="alphaValue">--</div>
+                <div class="sensor-label" style="margin-bottom: 15px;">Relaxation Indicator</div>
+            </div>
+
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-icon">🎯</span>
+                    <span class="sensor-title">Focus Score</span>
+                </div>
+                <div class="sensor-value" id="focusValue">--</div>
+                <div class="sensor-label" style="margin-bottom: 15px;">Beta / Alpha</div>
+                <canvas id="focusChart"></canvas>
             </div>
 
             <div class="sensor-card">

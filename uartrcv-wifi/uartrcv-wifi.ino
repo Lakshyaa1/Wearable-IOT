@@ -1,14 +1,19 @@
 #include "WiFi.h"
 #include <WebSocketsClient.h>
 
+
+
+#include "WiFi.h"
+#include <WebSocketsClient.h>
+
 #define BATCH_SIZE 1
-#define MAX_BUFFER_SIZE 256
+#define MAX_BUFFER_SIZE 512
 #define ONBOARD_LED 2
 
-const char* ssid = "MTNL";
-const char* password = "20851137";
+const char* ssid = "LALWANI";
+const char* password = "Lalv1111";
 
-const char* ws_host = "192.168.1.16"; // Note: Fixed the typo "1192" from original code here
+const char* ws_host = "192.168.29.135"; 
 const uint16_t ws_port = 1234;
 const char* ws_path = "/";
 
@@ -26,6 +31,11 @@ volatile unsigned long dataSent = 0;
 volatile unsigned long dataDropped = 0;
 volatile unsigned long sendFailed = 0;
 
+// Rate and Queue Tracking
+volatile uint32_t uartMsgs = 0;
+volatile uint32_t wsMsgs = 0;
+volatile uint32_t maxQueueDepth = 0;
+
 void readUARTTask(void* parameter) {
   char uartData[MAX_BUFFER_SIZE];
   int index = 0;
@@ -33,6 +43,12 @@ void readUARTTask(void* parameter) {
   Serial.println("[UART Task] Started");
 
   for (;;) {
+    // Track high-water mark for queue depth
+    uint32_t depth = uxQueueMessagesWaiting(uartQueue);
+    if (depth > maxQueueDepth) {
+      maxQueueDepth = depth;
+    }
+
     while (Serial1.available()) {
       char rxChar = Serial1.read();
       
@@ -45,24 +61,20 @@ void readUARTTask(void* parameter) {
       else if (rxChar == '\n' && index > 0) {
         uartData[index++] = rxChar;
         uartData[index] = '\0';
+        
         dataReceived++;
+        uartMsgs++; // Track for rate calculation
 
         if (uartQueue != NULL) {
           // Non-blocking send - if queue full, drop oldest data
           if (xQueueSend(uartQueue, uartData, 0) != pdTRUE) {
-            Serial.printf("[UART] ⚠ Queue full (size: %d) - dropping data\n", 
-                         uxQueueMessagesWaiting(uartQueue));
             dataDropped++;
             
             // Try to receive and discard oldest item, then queue new one
             char dummy[MAX_BUFFER_SIZE];
-            // FIX: Removed the & before dummy
             if (xQueueReceive(uartQueue, dummy, 0) == pdTRUE) {
               xQueueSend(uartQueue, uartData, 0);
-              Serial.println("[UART] Discarded oldest, queued new");
             }
-          } else {
-            Serial.printf("[UART] ✓ Queued: %.50s...\n", uartData);
           }
         }
         
@@ -80,7 +92,8 @@ void readUARTTask(void* parameter) {
       }
     }
 
-    vTaskDelay(pdMS_TO_TICKS(5));
+    // Reduced polling delay from 5ms to 1ms
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
 }
 
@@ -92,9 +105,7 @@ void sendWebSocketTask(void* parameter) {
   
   for (;;) {
     // Wait for data in queue with timeout
-    // FIX: Removed the & before uartData
     if (xQueueReceive(uartQueue, uartData, pdMS_TO_TICKS(500))) {
-      Serial.printf("[WS Task] Got data: %.60s\n", uartData);
       
       // Wait for connection with exponential backoff
       int waitCount = 0;
@@ -102,78 +113,76 @@ void sendWebSocketTask(void* parameter) {
       
       while (!isConnected && waitCount < maxWait) {
         checkWifi();
-        // FIX: Removed webSocket.loop() from here
         vTaskDelay(pdMS_TO_TICKS(100));
         waitCount++;
-        
-        if (waitCount % 20 == 0) {
-          Serial.printf("[WS Task] ⏳ Waiting for connection... (%d/100)\n", waitCount);
-        }
       }
       
       if (isConnected) {
-        Serial.println("[WS Task] 📤 Sending...");
-        
-        // FIX: Added length check before sending
         if (strlen(uartData) > 0) {
           bool sent = webSocket.sendTXT(uartData);
           
           if (sent) {
-            Serial.println("[WS Task] ✓ Sent successfully");
             dataSent++;
+            wsMsgs++; // Track for rate calculation
             consecutiveFailures = 0;
             digitalWrite(ONBOARD_LED, HIGH);
           } else {
-            Serial.println("[WS Task] ✗ Send failed");
             sendFailed++;
             consecutiveFailures++;
             digitalWrite(ONBOARD_LED, LOW);
             
-            // FIX: Removed dangerous manual disconnect()/begin() logic
             if (consecutiveFailures > 5) {
-              Serial.println("[WS Task] Too many failures");
               consecutiveFailures = 0;
             }
           }
         }
       } else {
-        Serial.println("[WS Task] ✗ Timeout waiting for connection (10s)");
         sendFailed++;
         digitalWrite(ONBOARD_LED, LOW);
       }
     } 
     else {
-      // No data available, just keep WebSocket alive (handled by main loop now)
+      // No data available, just keep WebSocket alive
       checkWifi();
-      // FIX: Removed webSocket.loop() from here
       vTaskDelay(pdMS_TO_TICKS(50));
     }
   }
 }
 
 void statusTask(void* parameter) {
-  Serial.println("[Status Task] Started - reporting every 30s");
+  Serial.println("[Status Task] Started - reporting every 5s");
   
   for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(30000));  // 30 seconds
+    vTaskDelay(pdMS_TO_TICKS(5000));  // Changed to 5 seconds to match BLE ESP
     
+    // Calculate Rates
+    uint32_t uartRate = uartMsgs / 5;
+    uint32_t wsRate = wsMsgs / 5;
+    uint32_t wsSamples = wsRate * 10; // Assuming 10 samples per packet based on the BLE pipeline
+
     Serial.println("\n╔════════════════════════════════════════╗");
-    Serial.println("║       SYSTEM STATUS REPORT (30s)       ║");
+    Serial.println("║        SYSTEM STATUS REPORT (5s)       ║");
     Serial.println("╠════════════════════════════════════════╣");
-    Serial.printf("║ WiFi Connected: %s\n", 
-                 WiFi.status() == WL_CONNECTED ? "✓ YES        " : "✗ NO         ");
-    Serial.printf("║ WebSocket Connected: %s\n", 
-                 isConnected ? "✓ YES        " : "✗ NO         ");
+    Serial.printf("║ WiFi Connected: %s\n", WiFi.status() == WL_CONNECTED ? "✓ YES        " : "✗ NO         ");
+    Serial.printf("║ WebSocket Connected: %s\n", isConnected ? "✓ YES        " : "✗ NO         ");
     Serial.printf("║ IP Address: %-28s ║\n", WiFi.localIP().toString().c_str());
-    Serial.printf("║ RSSI (WiFi): %d dBm                  ║\n", WiFi.RSSI());
     Serial.println("╠════════════════════════════════════════╣");
-    Serial.printf("║ Data Received (UART): %-17lu ║\n", dataReceived);
-    Serial.printf("║ Data Sent (WS): %-23lu ║\n", dataSent);
-    Serial.printf("║ Data Dropped: %-24lu ║\n", dataDropped);
+    Serial.printf("║ UART Rx Rate: %-4lu pkts/sec             ║\n", uartRate);
+    Serial.printf("║ WS Tx Rate:   %-4lu pkts/sec             ║\n", wsRate);
+    Serial.printf("║ WS Tx Rate:   %-4lu samples/sec          ║\n", wsSamples);
+    Serial.printf("║ Current Queue Depth: %3u / 50          ║\n", uxQueueMessagesWaiting(uartQueue));
+    Serial.printf("║ Queue Max Depth:     %-18lu║\n", maxQueueDepth);
+    Serial.printf("║ Data Dropped:        %-18lu║\n", dataDropped);
+    Serial.println("╠════════════════════════════════════════╣");
+    Serial.printf("║ Total Received (UART): %-15lu ║\n", dataReceived);
+    Serial.printf("║ Total Sent (WS): %-21lu ║\n", dataSent);
     Serial.printf("║ Send Failures: %-23lu ║\n", sendFailed);
-    Serial.printf("║ Queue Size: %u / 100                  ║\n", 
-                 uxQueueMessagesWaiting(uartQueue));
     Serial.println("╚════════════════════════════════════════╝\n");
+
+    // Reset windowed trackers
+    uartMsgs = 0;
+    wsMsgs = 0;
+    maxQueueDepth = 0;
   }
 }
 
@@ -183,15 +192,15 @@ void setup() {
   
   Serial.println("\n\n╔════════════════════════════════════════╗");
   Serial.println("║   ESP32 WebSocket Client - Wearables   ║");
-  Serial.println("║      Sensor Data Aggregator v2.0       ║");
+  Serial.println("║      Sensor Data Aggregator v2.1       ║");
   Serial.println("╚════════════════════════════════════════╝\n");
   
   Serial1.begin(115200, SERIAL_8N1, 16, 17);
   pinMode(ONBOARD_LED, OUTPUT);
   digitalWrite(ONBOARD_LED, LOW);
 
-  // FIX: Increased queue size to 100 for debugging
-  uartQueue = xQueueCreate(100, MAX_BUFFER_SIZE * sizeof(char));
+  // Set queue size explicitly to 50
+  uartQueue = xQueueCreate(50, MAX_BUFFER_SIZE * sizeof(char));
   if (uartQueue == NULL) {
     Serial.println("[Setup] ✗ Queue creation failed!");
     while(1) {
@@ -201,7 +210,7 @@ void setup() {
       delay(100);
     }
   }
-  Serial.println("[Setup] ✓ Queue created (capacity: 100 messages)");
+  Serial.println("[Setup] ✓ Queue created (capacity: 50 messages)");
 
   // Connect to WiFi
   Serial.println("[Setup] Connecting to WiFi...");
@@ -219,7 +228,7 @@ void setup() {
   // Enable heartbeat to keep connection alive
   webSocket.enableHeartbeat(15000, 3000, 2);
 
-  // Create tasks with optimized priorities
+  // Create tasks
   xTaskCreatePinnedToCore(readUARTTask, "Read UART", 4096, NULL, 2, &readUARTTask_h, 0);
   xTaskCreatePinnedToCore(sendWebSocketTask, "Send WebSocket", 8192, NULL, 2, &sendWebSocketTask_h, 1);
   xTaskCreatePinnedToCore(statusTask, "Status Monitor", 4096, NULL, 1, &statusTask_h, 1);
@@ -230,7 +239,6 @@ void setup() {
 }
 
 void loop() {
-  // FIX: This is now the ONLY place where webSocket.loop() is called
   webSocket.loop();
   vTaskDelay(pdMS_TO_TICKS(1));
 }
@@ -258,7 +266,6 @@ void checkWifi() {
   static unsigned long lastCheck = 0;
   unsigned long now = millis();
   
-  // Only check every 5 seconds to avoid hammering
   if (now - lastCheck < 5000) {
     return;
   }
@@ -302,11 +309,9 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
       break;
       
     case WStype_TEXT:
-      Serial.printf("[WS Event] 📥 Received (%zu bytes): %s\n", length, payload);
       break;
       
     case WStype_BIN:
-      Serial.printf("[WS Event] 📥 Received binary (%zu bytes)\n", length);
       break;
       
     case WStype_ERROR:
@@ -316,11 +321,9 @@ void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
       break;
       
     case WStype_PING:
-      Serial.println("[WS Event] 📤 Ping sent");
       break;
       
     case WStype_PONG:
-      Serial.println("[WS Event] 📥 Pong received");
       break;
       
     default:
