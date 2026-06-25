@@ -24,12 +24,21 @@ constexpr uint8_t BATCH_SIZE = 10;
 
 #pragma pack(push,1)
 struct EEGPacket {
+  
   uint16_t samples[BATCH_SIZE];
 };
 #pragma pack(pop)
 
 EEGPacket eegPacket;
 uint8_t batchIndex = 0;
+
+// =====================
+// EEG DEBUG STATS
+// =====================
+uint32_t eegSamplesTaken = 0;
+uint32_t eegPacketsSent = 0;
+uint32_t eegNotifyFail = 0;
+uint32_t lastEegStats = 0;
 
 // =====================
 // SENSOR STRUCTS & GLOBALS
@@ -177,7 +186,8 @@ void setup() {
   pinMode(A1, INPUT);
   pinMode(A2, INPUT);
   pinMode(EEG_PIN, INPUT);
-
+  analogReadResolution(12);
+  
   // Loadcell init (No blocking tare)
   scale.begin(DATA_PIN, CLOCK_PIN);
   scale.set_scale(121.16);
@@ -202,6 +212,7 @@ void setup() {
   lastEcgMs = millis();
   last10HzMs = millis();
   lastReconnectMs = millis();
+  lastEegStats = millis();
 }
 
 // =====================
@@ -284,13 +295,31 @@ void loop() {
     
     // --- 1. EEG @ 100Hz ---
     if ((nowUs - lastEegUs) >= INTERVAL_EEG_US) {
+      
+      // Check if the MCU is falling behind schedule
+      /*int32_t lateness = (int32_t)(nowUs - lastEegUs - INTERVAL_EEG_US);
+      if (lateness > 2000) {   // More than 2 ms late
+          Serial.print("EEG scheduler late by ");
+          Serial.print(lateness);
+          Serial.println(" us");
+      }*/
+
       lastEegUs += INTERVAL_EEG_US; 
 
       eegPacket.samples[batchIndex] = analogRead(EEG_PIN);
+      eegSamplesTaken++; // Tally the sample taken
       batchIndex++;
 
       if (batchIndex >= BATCH_SIZE) {
-        eegChar.notify((uint8_t*)&eegPacket, sizeof(EEGPacket));
+        // Attempt to send over BLE
+        bool ok = eegChar.notify((uint8_t*)&eegPacket, sizeof(EEGPacket));
+        
+        if (ok) {
+            eegPacketsSent++;
+        } else {
+            eegNotifyFail++;
+        }
+        
         batchIndex = 0;
       }
     }
@@ -333,5 +362,35 @@ void loop() {
         spo2Char.notify((uint8_t*)dataStr, strlen(dataStr));
       }
     }
+  }
+
+  // --- 4. DEBUG PRINT (Every 5 Seconds) ---
+  if (nowMs - lastEegStats >= 5000) {
+
+      Serial.println();
+      Serial.println("========== EEG DEBUG ==========");
+
+      Serial.print("Samples Taken : ");
+      Serial.print(eegSamplesTaken);
+      Serial.print("   Rate = ");
+      Serial.print(eegSamplesTaken / 5.0);
+      Serial.println(" Hz");
+
+      Serial.print("Packets Sent  : ");
+      Serial.print(eegPacketsSent);
+      Serial.print("   Rate = ");
+      Serial.print((eegPacketsSent * 10) / 5.0);
+      Serial.println(" samples/sec");
+
+      Serial.print("Notify Failures : ");
+      Serial.println(eegNotifyFail);
+
+      Serial.println("===============================");
+
+      eegSamplesTaken = 0;
+      eegPacketsSent = 0;
+      eegNotifyFail = 0;
+
+      lastEegStats = nowMs;
   }
 }
