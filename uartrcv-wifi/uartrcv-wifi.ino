@@ -10,10 +10,10 @@
 #define MAX_BUFFER_SIZE 512
 #define ONBOARD_LED 2
 
-const char* ssid = "LALWANI";
-const char* password = "Lalv1111";
+const char* ssid = "NCAIR IOT";
+const char* password = "Asim@123Tewari";
 
-const char* ws_host = "192.168.29.135"; 
+const char* ws_host = "192.168.0.180"; 
 const uint16_t ws_port = 1234;
 const char* ws_path = "/";
 
