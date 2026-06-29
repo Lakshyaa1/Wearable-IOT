@@ -405,6 +405,26 @@ python server.py  # Automatically serves HTML at http://localhost:5000
 const ws = new WebSocket("ws://YOUR_SERVER_IP:5000");
 ```
 
+### Advanced EEG Setup (Single ESP32 & Real-Time FFT)
+
+For dedicated EEG applications using the BioAmp EXG Pill, a streamlined single-ESP32 architecture is available. This removes the BLE requirement and directly samples the ADC while acting as a WiFi provisioning gateway and real-time DSP WebSocket server.
+
+**Hardware Setup:**
+- Connect the BioAmp EXG Pill output to the ESP32's `VN` pin (GPIO 39).
+- Power the ESP32 via USB and the Pill from the ESP32's 3.3V pin.
+
+**1. Firmware Provisioning (`esp32-vn-wifi-provisioning/esp32-vn-wifi-provisioning.ino`)**
+- Flash the sketch to the ESP32.
+- On first boot, it creates an `ESP32-Config` open WiFi hotspot. Connect to it (or visit `http://192.168.4.1`) to enter your local WiFi credentials and the laptop's IP address.
+- **To Reset WiFi:** While the ESP32 is running normally, press and hold the **BOOT button (GPIO 0) for 3 seconds**. It will wipe its credentials, restart, and open the hotspot again.
+
+**2. Python DSP Server (`eeg.py`)**
+- Run `python3 eeg.py`. It will prompt you for a CSV filename to save the raw unfiltered logs.
+- The server performs real-time 50 Hz Notch and 1-40 Hz Butterworth Bandpass filtering, calculating FFTs and Brainwave Bands (Alpha, Beta, etc.) on the fly.
+
+**3. Real-Time Dashboard**
+- Open `eeg_dashboard.html` in your browser to view the live filtered EEG waveforms, live FFT spectrum, and Focus Score bar charts.
+
 ---
 
 ## Project Structure
